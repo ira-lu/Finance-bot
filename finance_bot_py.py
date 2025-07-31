@@ -83,7 +83,7 @@ def handle_amount_input(message):
             formatted_datetime = message_datetime.strftime('%Y-%m-%d')
             sheet1.update_cell(len(sheet1.col_values(2)), 1, formatted_datetime)
     
-            bot.send_message(message.chat.id, 'Data was successfully added to the Google Sheet. /nDo you want to add another category?',reply_markup=create_question_keyboard())
+            bot.send_message(message.chat.id, 'Data was successfully added to the Google Sheet.\nDo you want to add another category?',reply_markup=create_question_keyboard())
             
             
             #del user_categories[message.chat.id]

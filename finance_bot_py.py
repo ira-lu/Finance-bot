@@ -4,15 +4,20 @@ from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import random
-google_credentials = 'C:/Users/lutov/MyCode/Finance project/Finance-bot/luov-finance-project-b33b78877788.json'
+import threading
+from flask import Flask
+import os
+import json
+
+creds_json = os.getenv("GOOGLE_CREDENTIALS")
+creds_dict=json.loads(creds_json)
 #connection to google table
 table_name = 'LuOv_finance'
 
 scope = ['https://spreadsheets.google.com/feeds',
          'https://www.googleapis.com/auth/drive']
 
-credentials = ServiceAccountCredentials.from_json_keyfile_name(google_credentials, scope)
+credentials = ServiceAccountCredentials.from_json_keyfile_name(creds_dict, scope)
 
 gs = gspread.authorize(credentials)
 work_sheet = gs.open(table_name)
@@ -30,7 +35,7 @@ headers = data.pop(0)
 #create df
 df_expenses = pd.DataFrame(data, columns=headers)
 #connection to Telegram
-bot_token = ''
+bot_token = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(bot_token)
 #connection to sheet with names of categories
 categories_sheet = work_sheet.worksheet('Categories')
@@ -101,4 +106,19 @@ def finish(call):
     if user_id in user_categories:
         del user_categories[user_id]
     bot.send_message(call.message.chat.id, "Thank you! Your data has been saved.")
-bot.polling()
+
+def run_bot():
+    bot.polling()
+
+# --- Flask Web Server ---
+flask_app = Flask(__name__)
+
+@flask_app.route("/")
+def home():
+    return "Bot's working!"
+
+if name == "__main__":
+    threading.Thread(target=run_bot, daemon=True).start()
+
+    port = int(os.environ.get("PORT", 5000))
+    flask_app.run(host="0.0.0.0", port=port)

@@ -1,8 +1,6 @@
 import telebot
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import pandas as pd
-import numpy as np
 from datetime import datetime
 import threading
 from flask import Flask
@@ -32,8 +30,6 @@ data = sheet1.get_all_values()
 #get header from data
 headers = data.pop(0)
 
-#create df
-df_expenses = pd.DataFrame(data, columns=headers)
 #connection to Telegram
 bot_token = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(bot_token)

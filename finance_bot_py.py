@@ -5,7 +5,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import random
-google_credentials = 'C:/Users/lutov/MyCode/Finance project/luov-finance-project-b33b78877788.json'
+google_credentials = 'C:/Users/lutov/MyCode/Finance project/Finance-bot/luov-finance-project-b33b78877788.json'
 #connection to google table
 table_name = 'LuOv_finance'
 
@@ -31,7 +31,6 @@ headers = data.pop(0)
 df_expenses = pd.DataFrame(data, columns=headers)
 #connection to Telegram
 bot_token = ''
-print(bot_token)
 bot = telebot.TeleBot(bot_token)
 #connection to sheet with names of categories
 categories_sheet = work_sheet.worksheet('Categories')

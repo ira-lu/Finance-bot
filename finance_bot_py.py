@@ -7,15 +7,13 @@ from flask import Flask
 import os
 import json
 
-creds_json = os.getenv("GOOGLE_CREDENTIALS")
-creds_dict=json.loads(creds_json)
 #connection to google table
 table_name = 'LuOv_finance'
 
 scope = ['https://spreadsheets.google.com/feeds',
          'https://www.googleapis.com/auth/drive']
 
-credentials = ServiceAccountCredentials.from_json_keyfile_name(creds_dict, scope)
+credentials = ServiceAccountCredentials.from_json_keyfile_name('luov-finance-project-b33b78877788.json', scope)
 
 gs = gspread.authorize(credentials)
 work_sheet = gs.open(table_name)

@@ -71,7 +71,7 @@ def get_or_create_user_sheet(name):
         ws = work_sheet.add_worksheet(title=name, rows=1010, cols=5)
         ws.update('A1:E1', [['date', 'category', 'amount (RM)',
                               '=SUM(C2:C1000)',
-                              '=D1*GOOGLEFINANCE("CURRENCY:MYRUB")']],
+                              '=D1*GOOGLEFINANCE("CURRENCY:MYRRUB")']],
                   value_input_option='USER_ENTERED')
         return ws
 

@@ -91,7 +91,7 @@ def load_registered_users():
     if len(rows) <= 1:
         return  # only header or empty
 
-    for row in rows[1:]:
+    for i, row in enumerate(rows[1:], start=2):
         if not row or not row[0].strip():
             continue
         try:
@@ -100,9 +100,10 @@ def load_registered_users():
             continue
         name = row[1].strip() if len(row) > 1 else ''
         role = row[2].strip() if len(row) > 2 else 'guest'
-        # Env-var owner override
-        if uid in OWNER_IDS:
+        # Env-var owner override — also update the sheet if it's out of date
+        if uid in OWNER_IDS and role != 'owner':
             role = 'owner'
+            users_sheet.update_cell(i, 3, 'owner')
         ws = get_or_create_user_sheet(name) if name else None
         registered_users[uid] = {'name': name, 'role': role, 'sheet': ws}
 

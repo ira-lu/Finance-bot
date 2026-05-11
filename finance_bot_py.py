@@ -69,10 +69,10 @@ def get_or_create_user_sheet(name):
         return work_sheet.worksheet(name)
     except gspread.exceptions.WorksheetNotFound:
         ws = work_sheet.add_worksheet(title=name, rows=1010, cols=5)
-        ws.update('A1:E1', [['date', 'category', 'amount (RM)',
-                              '=SUM(C2:C1000)',
-                              '=D1*GOOGLEFINANCE("CURRENCY:MYRRUB")']],
-                  value_input_option='USER_ENTERED')
+        ws.update('A1:E2', [
+            ['date', 'category', 'amount (RM)', 'Total RM',  'Total RUB'],
+            ['',     '',         '',             '=SUM(C3:C1000)', '=D2*GOOGLEFINANCE("CURRENCY:MYRRUB")'],
+        ], value_input_option='USER_ENTERED')
         return ws
 
 

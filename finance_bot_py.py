@@ -6,6 +6,8 @@ import threading
 from flask import Flask
 import os
 import json
+import requests
+import time
 
 #connection to google table
 table_name = 'LuOv_finance'
@@ -104,6 +106,17 @@ def finish(call):
 def run_bot():
     bot.polling()
 
+def self_ping():
+    url = os.environ.get("RENDER_EXTERNAL_URL")
+    if not url:
+        return
+    while True:
+        time.sleep(10 * 60)  # ping every 10 minutes
+        try:
+            requests.get(url, timeout=10)
+        except Exception:
+            pass
+
 # --- Flask Web Server ---
 flask_app = Flask(__name__)
 
@@ -113,6 +126,7 @@ def home():
 
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
+    threading.Thread(target=self_ping, daemon=True).start()
 
     port = int(os.environ.get("PORT", 5000))
     flask_app.run(host="0.0.0.0", port=port)

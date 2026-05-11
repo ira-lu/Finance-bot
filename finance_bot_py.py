@@ -177,8 +177,10 @@ def commit_expense(chat_id, state):
     sheet1.append_row([
         row['date'], row['category'], row['amount'],
         user['name'], _is_guest_tag(user['role'])
-    ])
-    user['sheet'].append_row([row['date'], row['category'], row['amount']])
+    ], value_input_option='USER_ENTERED')
+    user['sheet'].append_row(
+        [row['date'], row['category'], row['amount']],
+        value_input_option='USER_ENTERED')
     _reset_state(chat_id)
 
 
@@ -192,8 +194,10 @@ def commit_split_expense(chat_id, state):
         sheet1.append_row([
             row['date'], row['category'], share,
             target['name'], _is_guest_tag(target['role'])
-        ])
-        target['sheet'].append_row([row['date'], row['category'], share])
+        ], value_input_option='USER_ENTERED')
+        target['sheet'].append_row(
+            [row['date'], row['category'], share],
+            value_input_option='USER_ENTERED')
         names.append(target['name'])
     _reset_state(chat_id)
     return share, names
@@ -400,7 +404,7 @@ def handle_amount_input(message, state):
         bot.send_message(chat_id, 'Please enter a valid number for the amount.')
         return
 
-    formatted_date = datetime.fromtimestamp(message.date).strftime('%Y-%m-%d')
+    formatted_date = datetime.fromtimestamp(message.date).strftime('%d/%m/%Y')
     state['amount'] = amount
     state['pending_row'] = {
         'date': formatted_date,

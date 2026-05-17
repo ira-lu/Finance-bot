@@ -8,6 +8,11 @@ import os
 import requests
 import time
 
+import state
+import sheets
+from state import registered_users
+from strings import t, ADD_EXPENSE_LABELS, MY_EXPENSES_LABELS, LANG_TOGGLE_LABELS
+
 # ── Google Sheets connection ──────────────────────────────────────────────────
 TABLE_NAME = 'LuOv_finance'
 
@@ -19,117 +24,16 @@ credentials = ServiceAccountCredentials.from_json_keyfile_name(
 
 gs = gspread.authorize(credentials)
 work_sheet = gs.open(TABLE_NAME)
-sheet1 = work_sheet.sheet1
+sheets.init(work_sheet)
 
 # ── Categories ────────────────────────────────────────────────────────────────
 categories_sheet = work_sheet.worksheet('Categories')
 title_categories = categories_sheet.col_values(1)
 title_categories = [c for c in title_categories if c]
 
-# ── Owner IDs (env var: comma-separated Telegram IDs) ─────────────────────────
-_owner_ids_raw = os.environ.get('OWNER_IDS', '')
-OWNER_IDS = set(int(x.strip()) for x in _owner_ids_raw.split(',') if x.strip())
-
-# ── Phase constants ───────────────────────────────────────────────────────────
-PHASE_UNREGISTERED    = 'unregistered'
-PHASE_AWAITING_NAME   = 'awaiting_name'
-PHASE_IDLE            = 'idle'
-PHASE_CAT_SELECTED    = 'category_selected'
-PHASE_AWAITING_SPLIT  = 'awaiting_split'
-PHASE_SELECTING_SPLIT = 'selecting_split'
-
-# ── In-memory state ───────────────────────────────────────────────────────────
-user_states = {}       # {chat_id: {phase, category, amount, split_with, pending_row}}
-registered_users = {}  # {chat_id: {name, role, sheet}}
-
-
-def _blank_state():
-    return {
-        'phase': PHASE_UNREGISTERED,
-        'category': None,
-        'amount': None,
-        'split_with': set(),
-        'pending_row': {},
-    }
-
-
-def ensure_state(chat_id):
-    if chat_id not in user_states:
-        user_states[chat_id] = _blank_state()
-    return user_states[chat_id]
-
-
-def get_user(chat_id):
-    return registered_users.get(chat_id)
-
-
-# ── Sheet helpers ─────────────────────────────────────────────────────────────
-def get_or_create_user_sheet(name):
-    try:
-        return work_sheet.worksheet(name)
-    except gspread.exceptions.WorksheetNotFound:
-        ws = work_sheet.add_worksheet(title=name, rows=1010, cols=5)
-        ws.update('A1:E2', [
-            ['date', 'category', 'amount (RM)', 'Total RM',  'Total RUB'],
-            ['',     '',         '',             '=SUM(C3:C1000)', '=D2*GOOGLEFINANCE("CURRENCY:MYRRUB")'],
-        ], value_input_option='USER_ENTERED')
-        return ws
-
-
-def load_registered_users():
-    """Read Users sheet and populate registered_users cache."""
-    registered_users.clear()
-    try:
-        users_sheet = work_sheet.worksheet('Users')
-    except gspread.exceptions.WorksheetNotFound:
-        # Create Users sheet if it doesn't exist yet
-        users_sheet = work_sheet.add_worksheet(title='Users', rows=200, cols=3)
-        users_sheet.update('A1:C1', [['telegram_id', 'name', 'role']])
-        return
-
-    rows = users_sheet.get_all_values()
-    if len(rows) <= 1:
-        return  # only header or empty
-
-    for i, row in enumerate(rows[1:], start=2):
-        if not row or not row[0].strip():
-            continue
-        try:
-            uid = int(row[0].strip())
-        except ValueError:
-            continue
-        name = row[1].strip() if len(row) > 1 else ''
-        role = row[2].strip() if len(row) > 2 else 'guest'
-        # Env-var owner override — also update the sheet if it's out of date
-        if uid in OWNER_IDS and role != 'owner':
-            role = 'owner'
-            users_sheet.update_cell(i, 3, 'owner')
-        ws = get_or_create_user_sheet(name) if name else None
-        registered_users[uid] = {'name': name, 'role': role, 'sheet': ws}
-
-
-def register_new_user(chat_id, name):
-    """Append user to Users sheet and update in-memory cache."""
-    role = 'owner' if chat_id in OWNER_IDS else 'guest'
-    try:
-        users_sheet = work_sheet.worksheet('Users')
-    except gspread.exceptions.WorksheetNotFound:
-        users_sheet = work_sheet.add_worksheet(title='Users', rows=200, cols=3)
-        users_sheet.update('A1:C1', [['telegram_id', 'name', 'role']])
-    users_sheet.append_row([str(chat_id), name, role])
-    ws = get_or_create_user_sheet(name)
-    registered_users[chat_id] = {'name': name, 'role': role, 'sheet': ws}
-
-
-def unique_sheet_name(base_name):
-    """Return base_name, or base_name2, base_name3, … if tab already exists."""
-    existing = {ws.title for ws in work_sheet.worksheets()}
-    if base_name not in existing:
-        return base_name
-    i = 2
-    while f'{base_name}{i}' in existing:
-        i += 1
-    return f'{base_name}{i}'
+# ── Bot ───────────────────────────────────────────────────────────────────────
+bot_token = os.getenv('BOT_TOKEN')
+bot = telebot.TeleBot(bot_token)
 
 
 # ── Keyboard builders ─────────────────────────────────────────────────────────
@@ -141,11 +45,11 @@ def create_category_keyboard():
     return kb
 
 
-def create_question_keyboard():
+def create_question_keyboard(chat_id):
     kb = telebot.types.InlineKeyboardMarkup()
     kb.add(
-        telebot.types.InlineKeyboardButton(text='Yes', callback_data='add_another'),
-        telebot.types.InlineKeyboardButton(text='No', callback_data='finish'),
+        telebot.types.InlineKeyboardButton(text=t('add_another_yes', chat_id), callback_data='add_another'),
+        telebot.types.InlineKeyboardButton(text=t('add_another_no', chat_id), callback_data='finish'),
     )
     return kb
 
@@ -160,265 +64,308 @@ def create_split_keyboard(chat_id, split_with):
         kb.add(telebot.types.InlineKeyboardButton(
             text=label, callback_data=f'toggle_{uid}'))
     kb.add(telebot.types.InlineKeyboardButton(
-        text='Confirm split', callback_data='split_confirm'))
+        text=t('split_confirm_label', chat_id), callback_data='split_confirm'))
     kb.add(telebot.types.InlineKeyboardButton(
-        text='Cancel', callback_data='split_cancel'))
+        text=t('split_cancel_label', chat_id), callback_data='split_cancel'))
     return kb
 
 
-# ── Expense commit helpers ────────────────────────────────────────────────────
-def _is_guest_tag(role):
-    return 'guest' if role == 'guest' else ''
+def create_main_menu_keyboard(chat_id):
+    kb = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True, is_persistent=True)
+    kb.row(
+        telebot.types.KeyboardButton(t('btn_add_expense', chat_id)),
+        telebot.types.KeyboardButton(t('btn_my_expenses', chat_id)),
+    )
+    kb.row(telebot.types.KeyboardButton(t('btn_lang_toggle', chat_id)))
+    return kb
 
 
-def commit_expense(chat_id, state):
-    row = state['pending_row']
-    user = registered_users[chat_id]
-    sheet1.append_row([
-        row['date'], row['category'], row['amount'],
-        user['name'], _is_guest_tag(user['role'])
-    ], value_input_option='USER_ENTERED')
-    user['sheet'].append_row(
-        [row['date'], row['category'], row['amount']],
-        value_input_option='USER_ENTERED')
-    _reset_state(chat_id)
+def show_main_menu(chat_id, text=None):
+    bot.send_message(chat_id, text or t('choose_category', chat_id),
+                     reply_markup=create_main_menu_keyboard(chat_id))
 
 
-def commit_split_expense(chat_id, state):
-    row = state['pending_row']
-    all_ids = state['split_with'] | {chat_id}
-    share = round(row['amount'] / len(all_ids), 2)
-    names = []
-    for uid in all_ids:
-        target = registered_users[uid]
-        sheet1.append_row([
-            row['date'], row['category'], share,
-            target['name'], _is_guest_tag(target['role'])
-        ], value_input_option='USER_ENTERED')
-        target['sheet'].append_row(
-            [row['date'], row['category'], share],
-            value_input_option='USER_ENTERED')
-        names.append(target['name'])
-    _reset_state(chat_id)
-    return share, names
-
-
-def _reset_state(chat_id):
-    state = user_states[chat_id]
-    state['phase'] = PHASE_IDLE
-    state['category'] = None
-    state['amount'] = None
-    state['split_with'] = set()
-    state['pending_row'] = {}
-
-
-# ── Bot ───────────────────────────────────────────────────────────────────────
-bot_token = os.getenv('BOT_TOKEN')
-bot = telebot.TeleBot(bot_token)
-
-
+# ── Commands ──────────────────────────────────────────────────────────────────
 @bot.message_handler(commands=['start'])
 def start(message):
     chat_id = message.chat.id
-    state = ensure_state(chat_id)
-    user = get_user(chat_id)
+    s = sheets.ensure_state(chat_id)
+    user = sheets.get_user(chat_id)
     if user:
-        state['phase'] = PHASE_IDLE
-        bot.send_message(chat_id, 'Choose the category:', reply_markup=create_category_keyboard())
+        s['phase'] = state.PHASE_IDLE
+        show_main_menu(chat_id)
     else:
-        state['phase'] = PHASE_AWAITING_NAME
-        bot.send_message(chat_id, 'Welcome! What\'s your name?')
+        s['phase'] = state.PHASE_AWAITING_NAME
+        bot.send_message(chat_id, t('welcome_ask_name', chat_id))
 
 
 @bot.message_handler(commands=['reloadusers'])
 def reloadusers(message):
     chat_id = message.chat.id
-    user = get_user(chat_id)
+    user = sheets.get_user(chat_id)
     if not user or user['role'] != 'owner':
-        bot.send_message(chat_id, 'Not authorized.')
+        bot.send_message(chat_id, t('not_authorized', chat_id))
         return
-    load_registered_users()
-    bot.send_message(chat_id, f'Users reloaded. {len(registered_users)} registered.')
+    sheets.load_registered_users()
+    bot.send_message(chat_id, t('users_reloaded', chat_id).format(count=len(registered_users)))
 
 
 # ── Category callback ─────────────────────────────────────────────────────────
 @bot.callback_query_handler(func=lambda call: call.data in title_categories)
 def handle_category_callback(call):
     chat_id = call.message.chat.id
-    state = ensure_state(chat_id)
-    user = get_user(chat_id)
+    s = sheets.ensure_state(chat_id)
+    user = sheets.get_user(chat_id)
     if not user:
         bot.answer_callback_query(call.id)
-        bot.send_message(chat_id, 'Please use /start to register first.')
+        bot.send_message(chat_id, t('please_register', chat_id))
         return
-    state['category'] = call.data
-    state['phase'] = PHASE_CAT_SELECTED
+    s['category'] = call.data
+    s['phase'] = state.PHASE_CAT_SELECTED
     bot.answer_callback_query(call.id)
-    bot.send_message(chat_id, f'Category "{call.data}" selected. Enter the amount (RM):')
+    bot.send_message(chat_id, t('enter_amount', chat_id).format(cat=call.data))
 
 
 # ── Split-flow callbacks ──────────────────────────────────────────────────────
 @bot.callback_query_handler(func=lambda call: call.data == 'split_no')
 def split_no(call):
     chat_id = call.message.chat.id
-    state = ensure_state(chat_id)
+    s = sheets.ensure_state(chat_id)
     bot.answer_callback_query(call.id)
-    commit_expense(chat_id, state)
-    bot.send_message(chat_id,
-                     'Data saved. Add another expense?',
-                     reply_markup=create_question_keyboard())
+    sheets.commit_expense(chat_id, s)
+    bot.send_message(chat_id, t('add_another_prompt', chat_id),
+                     reply_markup=create_question_keyboard(chat_id))
 
 
 @bot.callback_query_handler(func=lambda call: call.data == 'split_yes')
 def split_yes(call):
     chat_id = call.message.chat.id
-    state = ensure_state(chat_id)
-    state['phase'] = PHASE_SELECTING_SPLIT
-    state['split_with'] = set()
+    s = sheets.ensure_state(chat_id)
+    s['phase'] = state.PHASE_SELECTING_SPLIT
+    s['split_with'] = set()
     bot.answer_callback_query(call.id)
     if len(registered_users) <= 1:
-        bot.send_message(chat_id, 'No other registered users to split with.')
-        commit_expense(chat_id, state)
-        bot.send_message(chat_id, 'Data saved. Add another expense?',
-                         reply_markup=create_question_keyboard())
+        bot.send_message(chat_id, t('no_other_users', chat_id))
+        sheets.commit_expense(chat_id, s)
+        bot.send_message(chat_id, t('add_another_prompt', chat_id),
+                         reply_markup=create_question_keyboard(chat_id))
         return
-    bot.send_message(chat_id, 'Select who to split with:',
-                     reply_markup=create_split_keyboard(chat_id, state['split_with']))
+    bot.send_message(chat_id, t('split_select', chat_id),
+                     reply_markup=create_split_keyboard(chat_id, s['split_with']))
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('toggle_'))
 def handle_toggle(call):
     chat_id = call.message.chat.id
-    state = ensure_state(chat_id)
+    s = sheets.ensure_state(chat_id)
     try:
         target_uid = int(call.data.split('_', 1)[1])
     except (ValueError, IndexError):
         bot.answer_callback_query(call.id)
         return
-    if target_uid in state['split_with']:
-        state['split_with'].discard(target_uid)
+    if target_uid in s['split_with']:
+        s['split_with'].discard(target_uid)
     else:
-        state['split_with'].add(target_uid)
+        s['split_with'].add(target_uid)
     bot.answer_callback_query(call.id)
     try:
         bot.edit_message_reply_markup(
             chat_id, call.message.message_id,
-            reply_markup=create_split_keyboard(chat_id, state['split_with']))
+            reply_markup=create_split_keyboard(chat_id, s['split_with']))
     except Exception:
-        bot.send_message(chat_id, 'Select who to split with:',
-                         reply_markup=create_split_keyboard(chat_id, state['split_with']))
+        bot.send_message(chat_id, t('split_select', chat_id),
+                         reply_markup=create_split_keyboard(chat_id, s['split_with']))
 
 
 @bot.callback_query_handler(func=lambda call: call.data == 'split_confirm')
 def split_confirm(call):
     chat_id = call.message.chat.id
-    state = ensure_state(chat_id)
+    s = sheets.ensure_state(chat_id)
     bot.answer_callback_query(call.id)
-    if not state['split_with']:
-        commit_expense(chat_id, state)
-        bot.send_message(chat_id, 'Data saved. Add another expense?',
-                         reply_markup=create_question_keyboard())
+    if not s['split_with']:
+        sheets.commit_expense(chat_id, s)
+        bot.send_message(chat_id, t('add_another_prompt', chat_id),
+                         reply_markup=create_question_keyboard(chat_id))
         return
-    total_amount = state['pending_row']['amount']
-    share, names = commit_split_expense(chat_id, state)
+    total_amount = s['pending_row']['amount']
+    share, names = sheets.commit_split_expense(chat_id, s)
     names_str = ', '.join(names)
-    bot.send_message(chat_id,
-                     f'Split {total_amount} RM among {names_str}. '
-                     f'Each share: {share} RM.\nAdd another expense?',
-                     reply_markup=create_question_keyboard())
+    msg = t('split_result', chat_id).format(total=total_amount, names=names_str, share=share)
+    bot.send_message(chat_id, f'{msg}\n{t("add_another_prompt", chat_id)}',
+                     reply_markup=create_question_keyboard(chat_id))
 
 
 @bot.callback_query_handler(func=lambda call: call.data == 'split_cancel')
 def split_cancel(call):
     chat_id = call.message.chat.id
-    state = ensure_state(chat_id)
-    state['phase'] = PHASE_AWAITING_SPLIT
-    state['split_with'] = set()
+    s = sheets.ensure_state(chat_id)
+    s['phase'] = state.PHASE_AWAITING_SPLIT
+    s['split_with'] = set()
     bot.answer_callback_query(call.id)
-    row = state['pending_row']
+    row = s['pending_row']
     kb = telebot.types.InlineKeyboardMarkup()
     kb.add(
-        telebot.types.InlineKeyboardButton(text='Yes, split', callback_data='split_yes'),
-        telebot.types.InlineKeyboardButton(text='No, just me', callback_data='split_no'),
+        telebot.types.InlineKeyboardButton(text=t('split_yes_label', chat_id), callback_data='split_yes'),
+        telebot.types.InlineKeyboardButton(text=t('split_no_label', chat_id), callback_data='split_no'),
     )
     bot.send_message(chat_id,
-                     f'Amount: {row.get("amount")} RM. Split with others?',
+                     t('split_question', chat_id).format(amount=row.get('amount')),
                      reply_markup=kb)
 
 
-# ── Add-another / finish callbacks ───────────────────────────────────────────
+# ── Add-another / finish callbacks ────────────────────────────────────────────
 @bot.callback_query_handler(func=lambda call: call.data == 'add_another')
 def add_another(call):
     chat_id = call.message.chat.id
-    state = ensure_state(chat_id)
-    state['phase'] = PHASE_IDLE
+    s = sheets.ensure_state(chat_id)
+    s['phase'] = state.PHASE_IDLE
     bot.answer_callback_query(call.id)
-    bot.send_message(chat_id, 'Choose the category:', reply_markup=create_category_keyboard())
+    # Go straight to category keyboard — user explicitly wants another expense
+    bot.send_message(chat_id, t('choose_category', chat_id), reply_markup=create_category_keyboard())
 
 
 @bot.callback_query_handler(func=lambda call: call.data == 'finish')
 def finish(call):
     chat_id = call.message.chat.id
-    state = ensure_state(chat_id)
-    state['phase'] = PHASE_IDLE
+    s = sheets.ensure_state(chat_id)
+    s['phase'] = state.PHASE_IDLE
     bot.answer_callback_query(call.id)
-    bot.send_message(chat_id, 'Thank you! Your data has been saved.')
+    show_main_menu(chat_id, t('data_saved', chat_id))
 
 
 # ── Catch-all message handler ─────────────────────────────────────────────────
 @bot.message_handler(func=lambda m: True)
 def dispatch_message(message):
     chat_id = message.chat.id
-    state = ensure_state(chat_id)
-    phase = state['phase']
+    s = sheets.ensure_state(chat_id)
+    text = message.text or ''
 
-    if phase == PHASE_AWAITING_NAME:
-        handle_name_input(message, state)
-    elif phase == PHASE_CAT_SELECTED:
-        handle_amount_input(message, state)
+    # Main menu button routing — checked before phase logic
+    if text in LANG_TOGGLE_LABELS:
+        handle_language_toggle(message)
+        return
+    if text in ADD_EXPENSE_LABELS:
+        handle_add_expense_button(message)
+        return
+    if text in MY_EXPENSES_LABELS:
+        handle_my_expenses(message)
+        return
+
+    phase = s['phase']
+    if phase == state.PHASE_AWAITING_NAME:
+        handle_name_input(message, s)
+    elif phase == state.PHASE_CAT_SELECTED:
+        handle_amount_input(message, s)
     else:
-        bot.send_message(chat_id, 'Please use /start to begin.')
+        bot.send_message(chat_id, t('please_register', chat_id))
 
 
-def handle_name_input(message, state):
+def handle_name_input(message, s):
     chat_id = message.chat.id
     name = message.text.strip()
     if not name or len(name) > 32:
-        bot.send_message(chat_id, 'Please enter a valid name (1–32 characters).')
+        bot.send_message(chat_id, t('invalid_name', chat_id))
         return
-    safe_name = unique_sheet_name(name)
-    register_new_user(chat_id, safe_name)
-    state['phase'] = PHASE_IDLE
-    bot.send_message(chat_id, f'Welcome, {safe_name}! Choose a category:',
-                     reply_markup=create_category_keyboard())
+    lang = 'ru' if (message.from_user.language_code or '').startswith('ru') else 'en'
+    safe_name = sheets.unique_sheet_name(name)
+    sheets.register_new_user(chat_id, safe_name, lang)
+    s['phase'] = state.PHASE_IDLE
+    show_main_menu(chat_id, t('welcome_registered', chat_id).format(name=safe_name))
 
 
-def handle_amount_input(message, state):
+def handle_amount_input(message, s):
     chat_id = message.chat.id
     if message.text == '/start':
         start(message)
         return
+    parts = message.text.strip().split(None, 1)
+    amount_str = parts[0]
+    comment = parts[1].strip() if len(parts) > 1 else ''
     try:
-        amount = float(message.text.strip())
+        amount = float(amount_str)
     except ValueError:
-        bot.send_message(chat_id, 'Please enter a valid number for the amount.')
+        bot.send_message(chat_id, t('invalid_amount', chat_id))
+        return
+    if amount <= 0:
+        bot.send_message(chat_id, t('invalid_amount', chat_id))
         return
 
     formatted_date = datetime.fromtimestamp(message.date).strftime('%d/%m/%Y')
-    state['amount'] = amount
-    state['pending_row'] = {
+    s['amount'] = amount
+    s['comment'] = comment
+    s['pending_row'] = {
         'date': formatted_date,
-        'category': state['category'],
+        'category': s['category'],
         'amount': amount,
+        'comment': comment,
     }
-    state['phase'] = PHASE_AWAITING_SPLIT
+    s['phase'] = state.PHASE_AWAITING_SPLIT
 
     kb = telebot.types.InlineKeyboardMarkup()
     kb.add(
-        telebot.types.InlineKeyboardButton(text='Yes, split', callback_data='split_yes'),
-        telebot.types.InlineKeyboardButton(text='No, just me', callback_data='split_no'),
+        telebot.types.InlineKeyboardButton(text=t('split_yes_label', chat_id), callback_data='split_yes'),
+        telebot.types.InlineKeyboardButton(text=t('split_no_label', chat_id), callback_data='split_no'),
     )
-    bot.send_message(chat_id, f'Amount: {amount} RM. Split with others?', reply_markup=kb)
+    bot.send_message(chat_id, t('split_question', chat_id).format(amount=amount), reply_markup=kb)
+
+
+def handle_add_expense_button(message):
+    chat_id = message.chat.id
+    if not sheets.get_user(chat_id):
+        bot.send_message(chat_id, t('please_register', chat_id))
+        return
+    bot.send_message(chat_id, t('choose_category', chat_id), reply_markup=create_category_keyboard())
+
+
+def handle_my_expenses(message):
+    chat_id = message.chat.id
+    user = registered_users.get(chat_id)
+    if not user or not user.get('sheet'):
+        bot.send_message(chat_id, t('please_register', chat_id))
+        return
+    ws = user['sheet']
+    try:
+        all_data = ws.get_all_values()   # single API call
+    except Exception as e:
+        bot.send_message(chat_id, f'Error reading data: {e}')
+        return
+    # Row index 1 (0-based) = row 2 in sheet = formula row
+    formula_row = all_data[1] if len(all_data) > 1 else []
+    total_rm  = formula_row[3] if len(formula_row) > 3 else '0'   # D2 = Total RM
+    total_rub = formula_row[4] if len(formula_row) > 4 else '0'   # E2 = Total RUB
+    # Data rows start at index 2 (row 3 in sheet)
+    data_rows = [r for r in all_data[2:] if any(r)]
+    last_5 = data_rows[-5:]
+    lines = []
+    for row in last_5:
+        date   = row[0] if len(row) > 0 else ''
+        cat    = row[1] if len(row) > 1 else ''
+        amount = row[2] if len(row) > 2 else ''
+        comment_val = row[5] if len(row) > 5 else ''
+        suffix = f' — {comment_val}' if comment_val else ''
+        lines.append(f'{date} | {cat} | {amount} RM{suffix}')
+    header = t('my_expenses_header', chat_id).format(total_rm=total_rm, total_rub=total_rub)
+    body = '\n'.join(lines) if lines else t('no_expenses_yet', chat_id)
+    bot.send_message(chat_id, f'{header}\n{body}')
+
+
+def handle_language_toggle(message):
+    chat_id = message.chat.id
+    user = registered_users.get(chat_id)
+    if not user:
+        return
+    new_lang = 'ru' if user.get('language', 'en') == 'en' else 'en'
+    user['language'] = new_lang
+    try:
+        users_ws = work_sheet.worksheet('Users')
+        cell = users_ws.find(str(chat_id), in_column=1)
+        if cell:
+            users_ws.update_cell(cell.row, 4, new_lang)
+    except Exception:
+        pass
+    key = 'lang_switched_ru' if new_lang == 'ru' else 'lang_switched_en'
+    bot.send_message(chat_id, t(key, chat_id),
+                     reply_markup=create_main_menu_keyboard(chat_id))
 
 
 # ── Infrastructure ────────────────────────────────────────────────────────────
@@ -447,7 +394,7 @@ def home():
 
 
 if __name__ == '__main__':
-    load_registered_users()
+    sheets.load_registered_users()
 
     threading.Thread(target=run_bot, daemon=True).start()
     threading.Thread(target=self_ping, daemon=True).start()

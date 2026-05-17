@@ -56,9 +56,9 @@ def get_or_create_user_sheet(name):
     except gspread.exceptions.WorksheetNotFound:
         ws = _work_sheet.add_worksheet(title=name, rows=1010, cols=6)
         ws.update('A1:F2', [
-            ['date', 'category', 'amount (RM)', 'Total RM', 'Total RUB', 'comment'],
-            ['',     '',         '',            '=SUM(C3:C1000)',
-             '=D2*GOOGLEFINANCE("CURRENCY:MYRRUB")', ''],
+            ['date', 'category', 'amount (RM)', 'comment', 'Total RM', 'Total RUB'],
+            ['',     '',         '',            '',         '=SUM(C3:C1000)',
+             '=E2*GOOGLEFINANCE("CURRENCY:MYRRUB")'],
         ], value_input_option='USER_ENTERED')
         return ws
 
@@ -129,9 +129,9 @@ def commit_expense(chat_id, s):
         row['date'], row['category'], row['amount'],
         user['name'], _is_guest_tag(user['role']), comment,
     ], value_input_option='USER_ENTERED')
-    # Per-user sheet: blanks in cols D & E preserve the SUM/GOOGLEFINANCE formulas in row 2
+    # Per-user sheet: col D = comment, cols E & F have SUM/GOOGLEFINANCE formulas in row 2
     user['sheet'].append_row(
-        [row['date'], row['category'], row['amount'], '', '', comment],
+        [row['date'], row['category'], row['amount'], comment],
         value_input_option='USER_ENTERED')
     _reset_state(chat_id)
 
@@ -149,7 +149,7 @@ def commit_split_expense(chat_id, s):
             target['name'], _is_guest_tag(target['role']), comment,
         ], value_input_option='USER_ENTERED')
         target['sheet'].append_row(
-            [row['date'], row['category'], share, '', '', comment],
+            [row['date'], row['category'], share, comment],
             value_input_option='USER_ENTERED')
         names.append(target['name'])
     _reset_state(chat_id)

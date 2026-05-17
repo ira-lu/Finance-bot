@@ -331,8 +331,8 @@ def handle_my_expenses(message):
         return
     # Row index 1 (0-based) = row 2 in sheet = formula row
     formula_row = all_data[1] if len(all_data) > 1 else []
-    total_rm  = formula_row[3] if len(formula_row) > 3 else '0'   # D2 = Total RM
-    total_rub = formula_row[4] if len(formula_row) > 4 else '0'   # E2 = Total RUB
+    total_rm  = formula_row[4] if len(formula_row) > 4 else '0'   # E2 = Total RM
+    total_rub = formula_row[5] if len(formula_row) > 5 else '0'   # F2 = Total RUB
     # Data rows start at index 2 (row 3 in sheet)
     data_rows = [r for r in all_data[2:] if any(r)]
     last_5 = data_rows[-5:]
@@ -341,7 +341,7 @@ def handle_my_expenses(message):
         date   = row[0] if len(row) > 0 else ''
         cat    = row[1] if len(row) > 1 else ''
         amount = row[2] if len(row) > 2 else ''
-        comment_val = row[5] if len(row) > 5 else ''
+        comment_val = row[3] if len(row) > 3 else ''   # D = comment
         suffix = f' — {comment_val}' if comment_val else ''
         lines.append(f'{date} | {cat} | {amount} RM{suffix}')
     header = t('my_expenses_header', chat_id).format(total_rm=total_rm, total_rub=total_rub)

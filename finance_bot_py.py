@@ -28,7 +28,7 @@ sheets.init(work_sheet)
 
 # ── Categories ────────────────────────────────────────────────────────────────
 categories_sheet = work_sheet.worksheet('Categories')
-title_categories = categories_sheet.col_values(1)
+title_categories = categories_sheet.col_values(1)[1:]  # skip heading row
 title_categories = [c for c in title_categories if c]
 
 # ── Bot ───────────────────────────────────────────────────────────────────────
